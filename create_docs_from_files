@@ -1,0 +1,199 @@
+import os
+import re
+import urllib.parse
+import uuid
+from docxcompose.composer import Composer
+from docx import Document as Document_compose
+import docx
+from docx.shared import Cm
+from pdf2docx import parse
+from svglib.svglib import svg2rlg
+from reportlab.graphics import renderPM
+from pathlib import Path
+import shutil
+
+# input directory with double slash
+inputDirectory = "C:\\Users\\User\\test"
+
+files_search_pattern = re.compile(r"\*\*API\:\*\* *\[.+\.json\)|\[.+\.erd\)|\[.+\.md\)|\[.+\.png\)|\[.+\.txt\)|\[.+\.pdf\)")
+all_files_and_links_pattern = re.compile(r"\[.+\/.+\..+\)")
+
+
+mydoc = docx.Document()
+
+# must be a directory
+if not os.path.isdir(inputDirectory):
+    print("Input wasn't a directory, exiting")
+    exit(1)
+
+# get last character and remove trailing slash if necessary to standardize with os.walk() subdirectories
+if inputDirectory[-1] == os.sep:
+    print("Last character of directory is a slash, removing it")
+    inputDirectory = inputDirectory[:-1]
+
+
+# basic script, create docx with applications
+def text_and_image_insertion(doc, text_list):
+    result_paragraphs_list = []
+    all_files_names = get_all_file_names_and_paths()
+    for paragraph in text_list:
+        replacing_items = re.findall(all_files_and_links_pattern,
+                                     paragraph)
+        if len(replacing_items) > 0:
+
+            for item in replacing_items:
+                if paragraph != item:
+                    paragraph_list = paragraph.split(item, 1)
+                    paragraph_list.insert(1, item)
+                    paragraph = paragraph_list[-1]
+                    paragraph_list = paragraph_list[:-1]
+                    result_paragraphs_list.extend(paragraph_list)
+                else:
+                    result_paragraphs_list.append(paragraph)
+        else:
+            result_paragraphs_list.append(paragraph)
+
+    print(result_paragraphs_list)
+
+    used_refs_arr = []
+    applications_dict = {}
+    applications_num = 1
+    for ready_paragraph in result_paragraphs_list:
+        # a crutch to remove the sign "!" remaining from the internal links taken out in a separate paragraph. Can be replaced intelligently.
+        if ready_paragraph == "!":
+            ready_paragraph = ""
+        if re.fullmatch(all_files_and_links_pattern,
+                        ready_paragraph):
+            current_dir_file_path = ready_paragraph.split("](")[-1]
+            if current_dir_file_path[-1] == ")":
+                current_dir_file_path = current_dir_file_path[:-1]
+            print(current_dir_file_path)
+            current_dir_file_path = current_dir_file_path.replace("../../", "")
+            current_dir_file_path = current_dir_file_path.replace("../", "")
+            current_dir_file_path = current_dir_file_path.replace("/", "\\")
+            for filename in all_files_names.keys():
+                if filename.endswith(current_dir_file_path):
+                    if "http" not in ready_paragraph and not re.fullmatch(files_search_pattern, ready_paragraph):
+                        file_tag = f"Application {applications_num} {all_files_names[filename]}"
+                    else:
+                        file_tag = ready_paragraph.split("]")[0]
+                        file_tag = file_tag.split("[")[1]
+                        file_tag = file_tag.split(".")[0]
+                    if current_dir_file_path in used_refs_arr:
+                        if "http" not in ready_paragraph and not re.fullmatch(files_search_pattern, ready_paragraph):
+                            file_tag = f"Application {applications_dict[current_dir_file_path]['application_number']} {all_files_names[filename]}"
+                        p = doc.add_paragraph()
+                        runner = p.add_run(f"Details: see \"{file_tag}\"")
+                        runner.italic = True
+                    else:
+                        p = doc.add_paragraph()
+                        runner = p.add_run(file_tag)
+                        runner.italic = True
+                        if current_dir_file_path.split(".")[-1] == "png":
+                            substitute_image_placeholder(doc, filename)
+                        elif current_dir_file_path.split(".")[-1] == "pdf":
+                            insert_pdf_to_docx(doc, filename)
+                        elif "http" not in filename and not re.fullmatch(files_search_pattern,
+                                                                              ready_paragraph):
+                            shutil.copyfile(filename, f"test/result_files/applications/Application {applications_num} {all_files_names[filename]}")
+                            applications_dict[current_dir_file_path] = {"application_number": applications_num}
+                            applications_num += 1
+                        else:
+                            with open(filename, 'r', encoding="UTF-8") as insertion_file:
+                                doc.add_paragraph(insertion_file.read())
+                        used_refs_arr.append(current_dir_file_path)
+
+        else:
+            doc.add_paragraph(ready_paragraph)
+    return doc
+
+
+def my_convert_function(svgfile, index=0):
+    drawing = svg2rlg(svgfile)
+    png_file_name = f"file {uuid.uuid4()}.png"
+    renderPM.drawToFile(drawing, png_file_name, fmt="PNG")
+    return png_file_name
+
+
+def insert_pdf_to_docx(doc, pdf_filename):
+    # filename_master is name of the file you want to merge the docx file into
+    master = doc
+
+    composer = Composer(master)
+    # filename_second_docx is the name of the second docx file
+    pdf_file = pdf_filename
+    word_file = "../middle.docx"
+    parse(pdf_file, word_file, start=0, end=None)
+
+    doc2 = Document_compose(word_file)
+    # append the doc2 into the master using composer.append function
+    composer.append(doc2)
+
+
+def substitute_image_placeholder(doc, image_filename):
+    # --- then append a run containing the image ---
+    if image_filename.split('.')[-1] == "svg":
+        # images_files = [my_convert_function(svgfile=image_filename, index=i) for i in range(3)]
+        # images = [10 - imageio.imread(x) for x in images_files]
+        # result = reduce(lambda a, b: a & b, images)
+        # imageio.imwrite("outout_png.png", result)
+        # [os.remove(x) for x in images_files]
+        doc.add_picture(my_convert_function(svgfile=image_filename), width=Cm(14))
+    else:
+        doc.add_picture(image_filename, width=Cm(14))
+
+
+def get_all_file_names_and_paths():
+    files_dict = {}
+    file_counter = 0
+    for dirpath, dirs, files in os.walk(inputDirectory, topdown=False):
+        for f in files:
+            file_counter += 1
+            files_dict[os.path.join(dirpath, f)] = f
+    print(files_dict)
+    return files_dict
+
+
+def make_docx_by_structure():
+    all_files_names = get_all_file_names_and_paths()
+    used_md_refs_arr = []
+    for dirpath, dirs, files in os.walk(inputDirectory, topdown=True):
+        for f in files:
+            file_name_no_extension = f.split(".")[0]
+
+            if file_name_no_extension == "README":
+                with open(os.path.join(dirpath, f), 'r', encoding="UTF-8") as file:
+                    text = file.read()
+                    # protection_from_loop
+                    for i in range(10):
+                        text = urllib.parse.unquote(text)
+                        md_items = re.findall(r"\[.+\.md\)", text)
+                        # print(len(md_items))
+                        if len(md_items) > 0:
+                            for md_ref in md_items:
+                                file_tag = md_ref.split("]")[0]
+                                file_tag = file_tag.split("[")[1]
+                                current_dir_file_path = md_ref.split("](")[-1]
+                                if current_dir_file_path[-1] == ")":
+                                    current_dir_file_path = current_dir_file_path[:-1]
+                                current_dir_file_path = current_dir_file_path.replace("../../", "")
+                                current_dir_file_path = current_dir_file_path.replace("../", "")
+                                current_dir_file_path = current_dir_file_path.replace("/", "\\")
+                                for filename in all_files_names.keys():
+                                    if filename.endswith(current_dir_file_path):
+                                        if md_ref in used_md_refs_arr:
+                                            text = text.replace(md_ref, "Details: see " + file_tag)
+                                        else:
+                                            with open(filename, 'r', encoding="UTF-8") as insertion_file:
+                                                used_md_refs_arr.append(md_ref)
+                                                text = text.replace(md_ref, file_tag + "\n" +
+                                                                    insertion_file.read())
+
+                    result = list(filter(lambda x: x != '', text.split('\n\n')))
+                    return result
+
+
+if __name__ == "__main__":
+    Path("test/result_files/applications").mkdir(parents=True, exist_ok=True)
+    mydoc = text_and_image_insertion(mydoc, make_docx_by_structure())
+    mydoc.save(f"test/result_files/documentation 1 {uuid.uuid4()}.docx")
