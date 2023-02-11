@@ -14,5 +14,3 @@
 - Please, inspect result.
 - If you found some bug - write me, please.
 
-## donation:)
-- BTC: bc1qt9fs8kv0nvfrmmdf5a6v4sqzyphrqfzjmkjvzu
